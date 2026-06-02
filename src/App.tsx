@@ -20,9 +20,7 @@ import {
   Mic, 
   Info,
   Award,
-  Smartphone,
-  PhoneCall,
-  Printer
+  PhoneCall
 } from 'lucide-react';
 import { QUIZ_LIST, Quiz } from './data';
 
@@ -41,6 +39,22 @@ function renderSmsWithColoredUrls(text: string) {
     }
     return part;
   });
+}
+
+// Strip out any URLs/links so they are not spoken aloud for seniors
+function cleanUrlsForSpeech(text: string): string {
+  if (!text) return '';
+  const regex = /(https?:\/\/\u0025*(?:[a-zA-Z0-9-._~:/?#[\]@!$&'()*+,;=]|\.\.\.)+|bit\.ly\/\S+|sh\.kr\/\S+|cs-card-guard\.net)/gi;
+  // Replace tilde symbol so it is not spoken aloud as well
+  let withPauses = text.replace(regex, '').replace(/~/g, '');
+  // Replace newlines with period and space if not already ending in terminal punctuations for natural breathing pauses
+  withPauses = withPauses.split('\n').map(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return '';
+    if (/[.!?]$/.test(trimmed)) return trimmed;
+    return trimmed + '.';
+  }).join(' ');
+  return withPauses.replace(/\s+/g, ' ').trim();
 }
 
 export default function App() {
@@ -72,10 +86,13 @@ export default function App() {
   const [score, setScore] = useState<number>(0);
   const [wasCorrectOnFirstTry, setWasCorrectOnFirstTry] = useState<boolean>(true);
   const [firstTryArray, setFirstTryArray] = useState<boolean[]>([true, true, true]);
+  const [showWrongNotes, setShowWrongNotes] = useState<boolean>(false);
 
   // Mic state (Speech to Text)
   const [isListening, setIsListening] = useState<boolean>(false);
   const [isSTTSupported, setIsSTTSupported] = useState<boolean>(false);
+  const [sttErrorMessage, setSttErrorMessage] = useState<string | null>(null);
+  const [isSpeakerActive, setIsSpeakerActive] = useState<boolean>(false);
 
   // --- Check STT compatibility ---
   useEffect(() => {
@@ -84,14 +101,58 @@ export default function App() {
   }, []);
 
   // --- Speech Synthesis Helper ---
-  const speak = (text: string) => {
+  const speak = (text: string, onEndCallback?: () => void) => {
     if (!speechEnabled) return;
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel(); // Cancel any ongoing speech
-      const utterance = new SpeechSynthesisUtterance(text);
+
+      // Replace manual line breaks with punctuation so the voice stops naturally, stripping tildes (~)
+      let processedText = text.replace(/~/g, '').split('\n').map(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return '';
+        if (/[.!?]$/.test(trimmed)) return trimmed;
+        return trimmed + '.';
+      }).join(' ');
+      processedText = processedText.replace(/\s+/g, ' ').trim();
+
+      const utterance = new SpeechSynthesisUtterance(processedText);
       utterance.lang = 'ko-KR';
-      utterance.rate = 0.88; // Extra slow and stable pace for seniors
-      utterance.pitch = 1.0; 
+      
+      // Default: 친절하고 천천히 읽기 (천천하고 다정한 속도 변경)
+      let rate = 0.82; 
+      let pitch = 1.05; 
+
+      const hasExclamation = text.includes('!');
+      const isCorrectText = text.includes('정답') || text.includes('잘하셨') || text.includes('완벽') || text.includes('대단하십니다') || text.includes('만점');
+      const isWrongText = text.includes('위험') || text.includes('잠깐만요') || text.includes('주의') || text.includes('오답') || text.includes('안 됩니다') || text.includes('속으시면');
+
+      if (hasExclamation) {
+        if (isCorrectText) {
+          // 정답을 맞췄으면 기뻐하는 활기찬 목소리로 
+          rate = 0.91;
+          pitch = 1.25;
+        } else if (isWrongText) {
+          // 틀렸으면 보다 다정하고 부드럽게 위로하듯 
+          rate = 0.74;
+          pitch = 1.00;
+        } else {
+          // 일반적인 강조
+          rate = 0.81;
+          pitch = 1.10;
+        }
+      } else {
+        // 느낌표가 없는 경우라도 보정
+        if (isCorrectText) {
+          rate = 0.84;
+          pitch = 1.12;
+        } else if (isWrongText) {
+          rate = 0.76;
+          pitch = 1.02;
+        }
+      }
+
+      utterance.rate = rate; 
+      utterance.pitch = pitch; 
       
       // Let's try to fine-tune a warm voice if possible
       const voices = window.speechSynthesis.getVoices();
@@ -100,6 +161,16 @@ export default function App() {
         utterance.voice = koVoice;
       }
       
+      utterance.onend = () => {
+        setIsSpeakerActive(false);
+        if (onEndCallback) onEndCallback();
+      };
+      utterance.onerror = () => {
+        setIsSpeakerActive(false);
+        if (onEndCallback) onEndCallback();
+      };
+      
+      setIsSpeakerActive(true);
       window.speechSynthesis.speak(utterance);
     }
   };
@@ -108,6 +179,7 @@ export default function App() {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
+    setIsSpeakerActive(false);
   };
 
   // Sync state to local storage
@@ -177,9 +249,13 @@ export default function App() {
   // --- Start voice recognition for nickname ---
   const startVoiceInput = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
+    if (!SpeechRecognition) {
+      setSttErrorMessage("🎤 기기나 브라우저에서 목소리 입력기능을 지원하지 않습니다. 아래 빈칸을 누르시고 성함을 편히 적어주셔요!");
+      return;
+    }
 
     triggerVibe([100]);
+    setSttErrorMessage(null); // Clear previous errors
     const recognition = new SpeechRecognition();
     recognition.lang = 'ko-KR';
     recognition.interimResults = false;
@@ -194,12 +270,26 @@ export default function App() {
       const resultText = event.results[0][0].transcript;
       const cleanName = resultText.replace(/\./g, "").trim();
       setNickname(cleanName);
-      speak(`${cleanName} 어르신, 참 반갑고 좋은 성함입니다.`);
+      setSttErrorMessage(null);
+      speak(`${cleanName} 어르신, 훈련 힘내세요!`);
     };
 
     recognition.onerror = (event: any) => {
-      console.error('Speech recognition error', event);
       setIsListening(false);
+      // Determine error type and formulate senior-friendly guides
+      const errorType = event.error || '';
+      let msg = '';
+      if (errorType === 'not-allowed') {
+        msg = "🎤 마이크 사용 권한이 비활성화되어 있습니다. 아래 빈칸을 누르시고 성함을 편히 적어주셔요!";
+      } else if (errorType === 'no-speech') {
+        msg = "🎤 말씀해주신 소리가 작거나 잘 안 들렸습니다. 단추를 다시 누르시고 천천히 크게 말씀해 주셔요!";
+      } else if (errorType === 'network') {
+        msg = "🎤 브라우저 보안 또는 마이크 환경 설정 관계로 직접 입력을 권해 드려요. 아래 빈칸을 누르시고 성함을 편히 적어주셔요!";
+      } else {
+        msg = "🎤 현재 음성 입력 환경에 잠시 지연이 발생했습니다. 아래 빈칸을 누르시고 성함을 편히 적어주셔요!";
+      }
+      setSttErrorMessage(msg);
+      speak(msg);
     };
 
     recognition.onend = () => {
@@ -208,9 +298,9 @@ export default function App() {
 
     try {
       recognition.start();
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
       setIsListening(false);
+      setSttErrorMessage("🎤 음성 인식을 준비하는 중에 문제가 있습니다. 아래 빈칸을 누르시고 성함을 편히 적어주셔요!");
     }
   };
 
@@ -220,7 +310,7 @@ export default function App() {
     stopSpeaking();
     
     // Select the 3 specific quizzes matching our real-world uploaded images in sequence
-    // id 1: 택배, id 6: 자녀사칭, id 3: 정부지원금
+    // id 1: 택배 사기, id 6: 자녀사칭, id 3: 정부지원금
     const selected = [
       QUIZ_LIST.find(q => q.id === 1)!,
       QUIZ_LIST.find(q => q.id === 6)!,
@@ -241,6 +331,7 @@ export default function App() {
     setScore(0);
     setFirstTryArray([true, true, true]);
     setWasCorrectOnFirstTry(true);
+    setShowWrongNotes(false);
     
     setSelectedChoiceIndices([]);
     setLastSelectedChoice(null);
@@ -251,10 +342,9 @@ export default function App() {
     setStep('training');
 
     // Guide Voice
-    const introSpeech = `안심 훈련을 시작합니다. 화면 중앙에 온 의심 문자를 잘 확인하시고, 하단의 세 가지 대처법 중 하나를 신중하게 골라 손으로 눌러주세요.`;
     setTimeout(() => {
-      speak(introSpeech);
-    }, 200);
+      speak(`첫번째 문제입니다! ${selected[0].question}`);
+    }, 220);
   };
 
   // --- Evaluate Choice ---
@@ -283,7 +373,7 @@ export default function App() {
       }
 
       // Read praise with voice automatically
-      speak(`정답입니다! ${currentQuiz.praiseComment}`);
+      speak("참 잘하셨어요! 완벽한 정답입니다!");
     } else {
       // Wrong option select
       setWasCorrectOnFirstTry(false);
@@ -294,7 +384,7 @@ export default function App() {
       setLastSelectedChoice(choiceIndex);
       
       // Read alert details with voice automatically
-      speak(`잠깐만요! 위험해요! ${currentQuiz.dangerExplanation}`);
+      speak("잠깐만요! 방금 선택하신 방법은 위험합니다. 다시 해보시겠어요?");
     }
   };
 
@@ -325,12 +415,17 @@ export default function App() {
 
       // Speak text of the new message
       setTimeout(() => {
-        speak(`다음 두 번째 예방 훈련입니다. 문자를 천천히 살펴보고 골라주세요.`);
-      }, 200);
+        const nextQuiz = selectedQuizzes[nextIndex];
+        if (nextIndex === 1) {
+          speak(`두번째 문제입니다! ${nextQuiz.question}`);
+        } else if (nextIndex === 2) {
+          speak(`마지막 문제입니다! ${nextQuiz.question}`);
+        }
+      }, 220);
     } else {
       // Proceed to review table first as requested
       setStep('review');
-      const finalMsg = `${nickname || '어르신'}, 정말 대단하십니다! 세 단계의 스미싱 예방 훈련을 마치셨습니다. 과연 나의 예방 성적표 점수는 몇 점이고 무엇을 복습해야 할지 결과를 지금 확인해 보셔요.`;
+      const finalMsg = '훈련 고생하셨습니다! 결과표를 확인해 보세요!';
       setTimeout(() => {
         speak(finalMsg);
       }, 200);
@@ -341,7 +436,7 @@ export default function App() {
     stopSpeaking();
     triggerVibe([150]);
     setStep('certificate');
-    const finalMsg = `영광스러운 수령장 수여식입니다. ${nickname || '자랑스러운 어르신'}! 사기꾼들의 미끼를 단번에 사정없이 완파하셨으므로, 대한민국 금융안심 은빛 수료증을 마음껏 수여받으셔요!`;
+    const finalMsg = `영광스러운 수여식입니다. ${nickname || '자랑스러운'} 어르신! 모든 훈련을 통과하셨으므로, 금융안심 은빛 수료증을 수여합니다!`;
     setTimeout(() => {
       speak(finalMsg);
     }, 200);
@@ -471,8 +566,8 @@ export default function App() {
                   "어르신, 대단히 반갑습니다!"
                 </h2>
                 <p className={`${currentFont.desc} text-brand-white leading-relaxed font-bold`}>
-                  최근 나쁜 자들이 교묘하게 휴대폰으로 보낸 사기 문자 때문에 가슴 졸이신 적이 있으실 텐데요. <br className="hidden md:inline" />
-                  저희 <strong>"안심 시니어"</strong>에서 모의 훈련을 통해 안전하게 사기문자 구별법을 배울 수 있습니다!
+                  최근 나쁜 자들이 교묘하게 휴대폰으로 보낸 사기 문자 때문에 가슴 졸이셨죠?<br />
+                  저희 <strong>"안심 시니어"</strong>에서 모의 훈련을 통해 안전하게 사기 문자 구별법을 배울 수 있습니다!
                 </p>
               </div>
 
@@ -487,7 +582,7 @@ export default function App() {
                 </p>
                 <div className="grid grid-cols-3 gap-3 w-full">
                   {(['normal', 'large', 'huge'] as const).map((sz) => {
-                    const sampleTexts = { normal: '보통 크기 (20pt 이상)', large: '기본 크게 (26pt 이상)', huge: '매우 크게 (34pt 이상)' };
+                    const sampleTexts = { normal: '보통 크기', large: '기본 크게', huge: '매우 크게' };
                     const detail = sampleTexts[sz];
                     const active = fontSize === sz;
                     return (
@@ -496,7 +591,7 @@ export default function App() {
                         onClick={() => {
                           triggerVibe([40]);
                           setFontSize(sz);
-                          speak(`${sampleTexts[sz]}로 설정 중입니다`);
+                          speak(`${sampleTexts[sz]}로 설정 하였습니다`);
                         }}
                         className={`py-3 px-2 border-2 rounded-lg font-black transition cursor-pointer ${currentFont.small} ${
                           active 
@@ -522,7 +617,7 @@ export default function App() {
                     type="text"
                     value={nickname}
                     onChange={(e) => setNickname(e.target.value)}
-                    placeholder="성함 또는 불리고 싶은 이름 (예: 김동해, 박순자)"
+                    placeholder="성함 또는 불리고 싶은 이름"
                     className={`flex-grow bg-[#111111] border-4 border-brand-white text-brand-white font-extrabold py-4 px-4 text-center rounded-xl focus:border-brand-yellow focus:outline-none placeholder:text-neutral-600 shadow-inner ${currentFont.desc}`}
                     id="input_nickname"
                   />
@@ -549,6 +644,14 @@ export default function App() {
                     🎙️ "어르신, 이름을 천천히 불러주셔요! 귀를 쫑긋 세우고 듣고 있습니다."
                   </p>
                 )}
+
+                {sttErrorMessage && (
+                  <div className="bg-brand-red/15 border-4 border-brand-red p-4 rounded-xl text-center mt-1">
+                    <p className={`${currentFont.smContent} text-brand-yellow font-black`}>
+                      {sttErrorMessage}
+                    </p>
+                  </div>
+                )}
                 
                 <p className={`${currentFont.small} leading-normal`}>
                   * 성함을 쓰시면 나중에 자랑스러운 <strong>수료증</strong>에 그대로 예쁘게 인쇄되어 친지분들에게 자랑하실 수 있습니다.
@@ -562,10 +665,10 @@ export default function App() {
                   onClick={handleStartPractice}
                   className={`w-full ${currentFont.button} bg-brand-green hover:bg-[#00EE00] text-brand-black border-4 border-brand-white rounded-2xl shadow-xl font-black cursor-pointer transform hover:scale-102 transition flex items-center justify-center gap-3`}
                 >
-                  <span>🛡️ 가상 스미싱 훈련 시작하기 !</span>
+                  <span>🛡️ 가상 스미싱 훈련 시작하기!</span>
                   <ChevronRight className="w-8 h-8 md:w-10 md:h-10 text-brand-black stroke-[3]" />
                 </button>
-                <p className={`${currentFont.small} mt-2`}>버튼이 아주 큽니다. 편하게 손바닥이나 손가락으로 누지르셔요.</p>
+                <p className={`${currentFont.small} mt-2`}>버튼이 아주 큽니다. 편하게 누르셔도 돼요!</p>
               </div>
 
             </motion.div>
@@ -606,7 +709,7 @@ export default function App() {
                       if (isPast) {
                         emoji = wasFirstTryCorrect ? '🟢 정답' : '🟡 보완';
                       } else if (isCurrent) {
-                        emoji = '⚡ 방어 대조 중';
+                        emoji = '⚡ 훈련 중';
                       }
 
                       return (
@@ -635,13 +738,6 @@ export default function App() {
                 
                 {/* 2A. LEFT: REAL SMS SQUEEZE DETECTOR (NO PHONE FRAME) */}
                 <div className="lg:col-span-5 flex flex-col gap-6 w-full" id="real_sms_case_detector">
-                  
-                  {/* Title Bar styling: Highly high-contrast, double border */}
-                  <div className="bg-[#111111] border-4 border-brand-yellow rounded-2xl p-4 text-center shadow-lg">
-                    <p className={`${currentFont.desc} text-brand-yellow font-black`}>
-                      🔎 실제 사기꾼이 보낸 가짜 문자 화면
-                    </p>
-                  </div>
 
                   {/* Real screenshot container (NO PHONE FRAME) */}
                   {currentQuiz?.realImageSrc ? (
@@ -655,7 +751,7 @@ export default function App() {
                         />
                       </div>
                       <span className={`${currentFont.small} text-brand-red font-black mt-2 animate-pulse`}>
-                        ⚠️ 실제 사기 문자 캡처 화면입니다.
+                        ⚠️ 실제 사기꾼이 보낸 가짜 문자 화면
                       </span>
                     </div>
                   ) : (
@@ -670,7 +766,7 @@ export default function App() {
                   {/* Magnified Text Assist Bubble (For Senior Readability - Dynamically Scales with All Font Sizes!) */}
                   <div className="bg-[#111111] border-4 border-double border-brand-yellow rounded-2xl p-5 text-left shadow-lg relative">
                     <div className="absolute right-3 top-3 bg-brand-yellow text-brand-black text-xs font-black px-2 py-0.5 rounded tracking-tighter">
-                      👀 돋보기 가동중
+                  
                     </div>
                     
                     <div className="flex items-center gap-2 mb-3">
@@ -690,13 +786,23 @@ export default function App() {
                   <button
                     onClick={() => {
                       triggerVibe([50]);
-                      speak(`발신인: ${currentQuiz.sender}. 문자 내용: ${currentQuiz.smsContent}`);
+                      if (isSpeakerActive) {
+                        stopSpeaking();
+                      } else {
+                        speak(cleanUrlsForSpeech(currentQuiz.smsContent));
+                      }
                     }}
                     className="w-full flex items-center justify-center gap-2 bg-neutral-900 hover:bg-neutral-850 px-5 py-4 border-2 border-white rounded-xl text-yellow-400 font-black cursor-pointer shadow-md transition transform hover:scale-101"
                     title="의심문자를 소리로 듣습니다"
                   >
-                    <Volume2 className="w-6 h-6 text-yellow-400 animate-bounce" />
-                    <span className={currentFont.smContent}>🔈 이 문자내용 소리로 전부 듣기</span>
+                    {isSpeakerActive ? (
+                      <Volume2 className="w-6 h-6 text-brand-red animate-pulse" />
+                    ) : (
+                      <Volume2 className="w-6 h-6 text-yellow-400 animate-bounce" />
+                    )}
+                    <span className={currentFont.smContent}>
+                      {isSpeakerActive ? '⏹️ 소리 읽어주기 중지' : '🔈 이 문자내용 소리로 전부 듣기'}
+                    </span>
                   </button>
 
                 </div>
@@ -709,24 +815,19 @@ export default function App() {
                     
                     <div className="flex flex-wrap items-center gap-3">
                       <span className={`bg-brand-yellow text-brand-black font-black px-4 py-1.5 rounded-lg border border-brand-white ${currentFont.smContent}`}>
-                        🚨 훈련 {quizIndex + 1}단계 : {currentQuiz.type} 사기
-                      </span>
-                      <span className={`text-neutral-400 font-bold ${currentFont.small}`}>
-                        [{currentQuiz.title}]
+                        🚨 훈련 {quizIndex + 1}단계
                       </span>
                     </div>
 
                     <div className="border-b border-neutral-800 pb-3">
                       <h3 className={`${currentFont.desc} text-brand-white font-medium leading-relaxed`}>
-                        어르신! 실제 사기문자를 확인하시고 아래 파란 미끼 주소에 대해 어떻게 할 지 결정해 주셔요:
-                        <br />
                         <span className="text-brand-yellow font-black mt-2 block">"{currentQuiz.question}"</span>
                       </h3>
                     </div>
 
                     <div className="flex items-center gap-2.5 text-neutral-300 bg-black border border-neutral-800 p-3 rounded-lg font-semibold">
                       <Info className="w-5 h-5 text-brand-yellow shrink-0" />
-                      <span className={currentFont.small}>아래 3가지 중 가장 현명하고 안전한 은빛 대처법 단추 하나를 골라 주셔요.</span>
+                      <span className={currentFont.small}>아래 3가지 중 가장 현명하고 안전한 대처법 하나를 골라 주셔요.</span>
                     </div>
                   </div>
 
@@ -814,15 +915,7 @@ export default function App() {
                               {correctFeedback}
                             </p>
 
-                            {/* Core rule banner */}
-                            <div className="mt-6 bg-[#111111] border-4 border-dashed border-brand-green p-4 md:p-5 rounded-2xl text-left shadow-lg">
-                              <span className={`${currentFont.desc} text-brand-green font-black block mb-1.5`}>💡 은빛 안심 우수교재 요약:</span>
-                              <p className={`${currentFont.smContent} text-brand-white font-bold leading-relaxed`}>
-                                {quizIndex === 0 && "출처 불명 문자 메시지의 인터넷 주소(URL)는 클릭하기 전에 무조건 의심하고 누르지 않는 것이 완벽한 예방입니다!"}
-                                {quizIndex === 1 && "가족을 사칭해 휴대폰 파손이나 임시번호 소식을 전해오면 확인 전까지 카드를 사거나 대리 결제하지 마시고, 기존 번호로 꼭 통화해보세요!"}
-                                {quizIndex === 2 && "공공기관, 금융기관 등은 어떠한 경우에도 문자나 카카오톡으로 보안카드 이미지나 개인금융정보를 수집하거나 요구하지 않습니다!"}
-                              </p>
-                            </div>
+
                           </div>
 
                           {/* Next controls inside overlay block */}
@@ -832,7 +925,7 @@ export default function App() {
                               onClick={handleNextStep}
                               className={`w-full ${currentFont.button} bg-brand-green hover:bg-[#00EE00] text-brand-black border-4 border-brand-white rounded-2xl font-black cursor-pointer flex items-center justify-center gap-3 shadow-2xl transition hover:scale-102`}
                             >
-                              <span>{quizIndex < 2 ? '다음 단계 훈련으로 전진 ➡️' : '은빛 수료증 받기 🎓'}</span>
+                              <span>{quizIndex < 2 ? '다음 단계 훈련으로 전진 ➡️' : '결과표 확인하기 🎓'}</span>
                             </button>
                           </div>
                         </motion.div>
@@ -879,13 +972,7 @@ export default function App() {
                               {wrongFeedback}
                             </p>
 
-                            {/* Core rule warning banner */}
-                            <div className="mt-6 bg-[#111111] border-4 border-dashed border-brand-yellow p-4 md:p-5 rounded-2xl text-left shadow-lg">
-                              <span className={`${currentFont.desc} text-brand-yellow font-black block mb-1.5`}>💡 은빛 안심 보수교육 처방전:</span>
-                              <p className={`${currentFont.smContent} text-brand-white font-bold leading-relaxed`}>
-                                문자의 인터넷 <span className="text-brand-red underline decoration-2 font-black">파란 인터넷 주소(링크)</span>는 전송된 해커 악성 코드이며, 자녀 사칭은 반드시 <span className="text-brand-green font-black">기존에 알던 번호로 무조건 먼저 전화를 걸어 대조</span>해야 안전합니다!
-                              </p>
-                            </div>
+
                           </div>
 
                           {/* Retry control button */}
@@ -894,7 +981,7 @@ export default function App() {
                               onClick={() => {
                                 triggerVibe([80]);
                                 setWrongFeedback(null);
-                                speak("괜찮습니다! 다시 골라봅시다. 화이팅!");
+                                speak("괜찮습니다! 다시 골라봅시다!");
                               }}
                               className={`w-full ${currentFont.button} bg-brand-yellow hover:bg-yellow-300 text-brand-black border-4 border-brand-white rounded-2xl font-black cursor-pointer flex items-center justify-center gap-3 shadow-2xl transition hover:scale-102`}
                               id="btn_wrong_retry"
@@ -931,11 +1018,8 @@ export default function App() {
                   📋
                 </div>
                 <h2 className={`${currentFont.title} text-brand-yellow font-black`}>
-                  안심 시니어 모의 훈련 예방 성적표
+                  안심 시니어 모의 훈련 예방 결과표
                 </h2>
-                <p className={`${currentFont.desc} text-neutral-300 font-bold max-w-xl mx-auto`}>
-                  어르신, 대단히 애쓰셨습니다! 나쁜 금융 사기꾼들을 향한 3가지 실전 안심 방어력이 아래와 같이 채점되었습니다.
-                </p>
               </div>
 
               {/* High Contrast Scoreboard Table */}
@@ -958,11 +1042,11 @@ export default function App() {
                     <p className={`${currentFont.small} text-brand-green font-black uppercase mb-1`}>🎗️ 훈련 합격 판정</p>
                     {score === 3 ? (
                       <span className={`bg-brand-green text-brand-black px-4 py-1.5 rounded-lg font-black tracking-widest border border-brand-white ${currentFont.smContent}`}>
-                        합격 ! 🏆 [영웅]
+                        합격! 🏆
                       </span>
                     ) : (
                       <span className={`bg-brand-red text-brand-white px-4 py-1.5 rounded-lg font-black tracking-widest border border-brand-white ${currentFont.smContent}`}>
-                        오답 보완 필 ⚠️
+                        보완 필요 ⚠️
                       </span>
                     )}
                   </div>
@@ -972,99 +1056,98 @@ export default function App() {
                 <div className="p-4 text-center bg-black/40">
                   {score === 3 ? (
                     <p className={`${currentFont.desc} text-brand-green font-black`}>
-                      💯 만점입니다! 어르신께서는 스미싱의 파란 미끼와 가짜 자녀 번호 사기를 100% 간파하셨습니다! 최고의 은빛 국가 안심 수료 자격을 인정해 드립니다.
+                      💯 만점입니다! 파란 미끼와 가족 사기를 완벽히 막아내셨습니다!
                     </p>
                   ) : (
                     <p className={`${currentFont.desc} text-brand-yellow font-black`}>
-                      ⚠️ 아직 한차례 실수가 남아있습니다! 나쁜 사기 일당의 기만적인 함정들을 100% 피해내기 위하여 틀린 부분을 상기한 후, 만점으로 수료증에 다시 도전해보셔요!
+                      ⚠️ 오답 부분을 확인하시고 만점 수료증에 다시 도전해보세요!
                     </p>
                   )}
                 </div>
               </div>
 
-              {/* Bento Score Review Detail items */}
+              {/* Toggleable Incorrect review items */}
               <div className="flex flex-col gap-4">
-                <h3 className={`${currentFont.smContent} text-left text-brand-yellow font-black flex items-center gap-1.5 border-l-4 border-brand-yellow pl-3`}>
-                  🧐 각 문항별 훈련 결과 오답 노트 대조
-                </h3>
+                <button
+                  onClick={() => {
+                    triggerVibe([50]);
+                    setShowWrongNotes(!showWrongNotes);
+                  }}
+                  className="w-full py-4 px-6 border-4 border-brand-white bg-neutral-900 text-brand-yellow font-black text-xl md:text-2xl rounded-2xl cursor-pointer hover:bg-neutral-850 transition flex items-center justify-center gap-3 shadow-lg"
+                >
+                  <span>{showWrongNotes ? '🕵️‍♂️ 오답 확인란 닫기 (접기)' : '🕵️‍♂️ 틀린 문제(오답) 확인하기'}</span>
+                </button>
 
-                <div className="grid grid-cols-1 gap-4">
-                  {selectedQuizzes.map((quiz, idx) => {
-                    const isFirstTryCorrect = firstTryArray[idx];
-                    return (
-                      <div 
-                        key={quiz.id}
-                        className={`border-4 rounded-2xl p-4 sm:p-5 flex flex-col md:flex-row gap-4 justify-between items-start md:items-center ${
-                          isFirstTryCorrect 
-                            ? 'border-brand-green bg-brand-green/5' 
-                            : 'border-brand-red bg-brand-red/5'
-                        }`}
-                      >
-                        {/* Left Info Column */}
-                        <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
-                          {/* Case Image Thumbnail if present */}
-                          {quiz.realImageSrc ? (
-                            <div className="w-20 h-20 rounded-xl bg-neutral-900 border border-neutral-800 p-1 flex justify-center items-center overflow-hidden shrink-0">
-                              <img 
-                                src={quiz.realImageSrc} 
-                                alt={quiz.title} 
-                                className="w-full h-auto object-contain max-h-[70px]" 
-                                referrerPolicy="no-referrer"
-                              />
-                            </div>
-                          ) : (
-                            <div className="w-20 h-20 rounded-xl bg-neutral-900 border border-neutral-800 flex items-center justify-center shrink-0">
-                              <span className="text-3xl">📱</span>
-                            </div>
-                          )}
+                {showWrongNotes && (
+                  <div className="grid grid-cols-1 gap-4 mt-2">
+                    {(() => {
+                      const wrongItems = selectedQuizzes
+                        .map((quiz, idx) => ({ quiz, idx, isCorrectOnFirstTry: firstTryArray[idx] }))
+                        .filter(item => !item.isCorrectOnFirstTry);
 
-                          {/* Text summary info */}
-                          <div className="text-left">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className={`bg-neutral-800 text-neutral-300 font-black px-2 py-0.5 rounded ${currentFont.small}`}>
-                                단계 {idx + 1}
-                              </span>
-                              <span className="text-neutral-500 font-bold text-xs">|</span>
-                              <span className={`text-brand-yellow font-black ${currentFont.smContent}`}>
-                                [{quiz.type}] 부문
-                              </span>
-                            </div>
-                            <p className={`${currentFont.smContent} text-brand-white font-black mt-1`}>
-                              {quiz.title}
-                            </p>
-                            
-                            {/* Quiz specific danger highlights */}
-                            <p className={`${currentFont.small} text-neutral-400 mt-0.5 leading-relaxed font-semibold`}>
-                              내용: {quiz.smsContent.length > 50 ? quiz.smsContent.slice(0, 50) + '...' : quiz.smsContent}
+                      if (wrongItems.length === 0) {
+                        return (
+                          <div className="bg-neutral-900 border-4 border-brand-green p-6 rounded-2xl text-center">
+                            <p className={`${currentFont.desc} text-brand-green font-black`}>
+                              🎉 틀린 문제가 없습니다! 모든 문제를 첫 도전에 한 번에 완벽히 격파하셨습니다!
                             </p>
                           </div>
-                        </div>
+                        );
+                      }
 
-                        {/* Right Resolution Column */}
-                        <div className="w-full md:w-auto text-left md:text-right flex flex-col gap-1 shrink-0 border-t md:border-t-0 border-neutral-800 pt-3 md:pt-0">
-                          <div className="flex items-center gap-2 md:justify-end">
-                            {isFirstTryCorrect ? (
-                              <span className={`bg-brand-green text-brand-black px-3 py-1 rounded-full font-black border border-brand-white flex items-center gap-1 ${currentFont.small}`}>
-                                <span>🟢 첫 시도 성공</span>
-                              </span>
+                      return wrongItems.map(({ quiz, idx }) => (
+                        <div 
+                          key={quiz.id}
+                          className="border-4 border-brand-red bg-brand-red/5 rounded-2xl p-4 sm:p-6 flex flex-col md:flex-row gap-5 justify-between items-start md:items-center text-left shadow-md"
+                        >
+                          {/* Case Image and Details column */}
+                          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+                            {quiz.realImageSrc ? (
+                              <div className="w-24 h-24 rounded-xl bg-neutral-900 border border-neutral-800 p-1.5 flex justify-center items-center overflow-hidden shrink-0">
+                                <img 
+                                  src={quiz.realImageSrc} 
+                                  alt={quiz.title} 
+                                  className="w-full h-auto object-contain max-h-[80px]" 
+                                  referrerPolicy="no-referrer"
+                                />
+                              </div>
                             ) : (
-                              <span className={`bg-brand-red text-brand-white px-3 py-1 rounded-full font-black border border-brand-white flex items-center gap-1 animate-pulse ${currentFont.small}`}>
-                                <span>🟡 복습 및 교정완료</span>
-                              </span>
+                              <div className="w-24 h-24 rounded-xl bg-neutral-900 border border-neutral-800 flex items-center justify-center shrink-0">
+                                <span className="text-4xl">📱</span>
+                              </div>
                             )}
+
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap mb-1">
+                                <span className="bg-brand-red text-brand-white font-black px-3 py-1 rounded text-sm">
+                                  단계 {idx + 1} 틀림 ⚠️
+                                </span>
+                                <span className="text-neutral-500 font-bold text-xs">|</span>
+                                <span className="text-brand-yellow font-black text-sm">
+                                  [{quiz.type}]
+                                </span>
+                              </div>
+                              <p className={`${currentFont.desc} text-brand-white font-black`}>
+                                {quiz.title}
+                              </p>
+                              <p className={`${currentFont.smContent} text-neutral-300 mt-2 p-2 bg-black/40 rounded-lg border border-neutral-850 max-w-xl`}>
+                                <strong className="text-neutral-400">의심문자 내용:</strong> {quiz.smsContent}
+                              </p>
+                            </div>
                           </div>
-                          
-                          <p className={`${currentFont.small} text-brand-yellow mt-1 font-bold`}>
-                            핵심 방지 행동 요약:
-                          </p>
-                          <p className={`${currentFont.smContent} text-brand-white font-black leading-snug md:max-w-xs`}>
-                            💡 {quiz.coreRule}
-                          </p>
+
+                          {/* Action remediation column */}
+                          <div className="w-full md:w-auto shrink-0 border-t md:border-t-0 border-neutral-800 pt-4 md:pt-0">
+                            <span className="text-brand-yellow font-black block mb-1 text-sm">🚨 안전 예방 요약:</span>
+                            <p className={`${currentFont.smContent} text-brand-white font-bold leading-relaxed max-w-sm`}>
+                              {quiz.coreRule}
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      ));
+                    })()}
+                  </div>
+                )}
               </div>
 
               {/* Call to Active Navigation Buttons */}
@@ -1097,7 +1180,7 @@ export default function App() {
                       className={`w-full ${currentFont.button} bg-brand-yellow hover:bg-yellow-300 text-brand-black border-4 border-brand-white rounded-2xl shadow-xl font-black cursor-pointer flex items-center justify-center gap-3 transform hover:scale-102 transition duration-240`}
                     >
                       <RotateCcw className="w-7 h-7 stroke-[3]" />
-                      <span>🔄 오답 상기해서 수료증 따러 다시 도전하기 !</span>
+                      <span>🔄 다시 도전하기 !</span>
                     </button>
                     
                     {/* Locked Certificate Visual indicator */}
@@ -1109,6 +1192,17 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                <button
+                  onClick={() => {
+                    triggerVibe([40]);
+                    stopSpeaking();
+                    setStep('onboarding');
+                  }}
+                  className="mt-4 px-6 py-3 border border-dashed border-neutral-500 rounded-xl text-neutral-400 hover:text-white text-lg font-bold block mx-auto cursor-pointer w-full max-w-sm"
+                >
+                  ◀ 처음 화면(이름 설정)으로 돌아가기
+                </button>
               </div>
             </motion.div>
           )}
@@ -1120,7 +1214,7 @@ export default function App() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="flex flex-col gap-8 text-center"
+              className="flex flex-col gap-8 text-center animate-fadeIn"
               id="view_certificate"
             >
               
@@ -1142,84 +1236,39 @@ export default function App() {
                 </div>
 
                 {/* Star Scoring Achievement Badge */}
-                <div className="flex justify-center items-center gap-2 my-2 bg-neutral-900 border border-neutral-800 p-4 rounded-2xl max-w-sm mx-auto w-full">
-                  <div className={`text-left font-bold text-neutral-400 mr-3 ${currentFont.small}`}>
-                    방어 성과 등급:
-                  </div>
-                  <div className="flex gap-1">
-                    {[1, 2, 3].map((star) => {
-                      // Award stars: 
-                      // 3 stars: Score === 3
-                      // 2 stars: Score === 2
-                      // 1 star: Score <= 1
-                      const isAwarded = star <= score;
-                      return (
-                        <span 
-                          key={star} 
-                          className={`text-3xl md:text-4xl transition-all ${
-                            isAwarded ? 'text-brand-yellow animate-spin-once' : 'text-neutral-700 font-light'
-                          }`}
-                        >
-                          {isAwarded ? '★' : '☆'}
-                        </span>
-                      );
-                    })}
-                  </div>
-                  <div className={`font-mono text-brand-yellow font-extrabold ml-2 ${currentFont.smContent}`}>
-                    ({score} / 3 개 철저방어)
-                  </div>
+                <div className="flex justify-center items-center gap-2 my-2 bg-neutral-900 border border-neutral-800 p-4 rounded-2xl">
+                  <span className="text-2xl">⭐️⭐️⭐️</span>
+                  <span className={`${currentFont.desc} text-brand-yellow font-black`}>스미싱 예방 완벽 100점 달성자</span>
+                  <span className="text-2xl">⭐️⭐️⭐️</span>
                 </div>
 
-                {/* Customer Personalized Statement */}
-                <div className="my-3 flex flex-col gap-4 text-center max-w-2xl mx-auto">
-                  <p className={`${currentFont.title} text-brand-white`}>
-                    성 명: <span className="text-brand-yellow border-b-2 border-dashed border-brand-white px-2 font-black">{nickname || '자랑스러운 어르신'}</span> 귀하
+                <div className="my-6 text-center flex flex-col gap-4">
+                  <p className={`${currentFont.desc} text-brand-white font-bold`}>
+                    성 명 : <span className="text-brand-yellow font-black border-b-2 border-brand-yellow px-4">{nickname || " 어르신"}</span> 어르신
                   </p>
-                  
-                  <p className={`${currentFont.smContent} text-neutral-200 leading-relaxed text-center font-bold px-2 py-4 bg-neutral-900/60 rounded-xl border border-neutral-800`}>
-                    위 어르신은 악독한 스미싱 사기꾼들이 꾸며낸 택배 사칭, 가족 사칭, 공공기관 허위 통지 등 세상이 어지러운 속임수들을 완벽한 예리함과 지혜로 무참히 격퇴하고 소중한 금융 안전지대를 일구어 내셨습니다. <br className="hidden md:inline" /> <br />
-                    이에 고마운 뜻과 높은 노고를 깊이 기리고자, "안심 시니어" 군민 수비대로 정식 위촉함과 동시에 이 <strong>은빛 기사 수료장</strong>을 수여합니다.
+                  <p className={`${currentFont.smContent} text-neutral-300 leading-relaxed font-bold max-w-2xl mx-auto`}>
+                    위 어르신은 교묘하고 나쁜 금융 사기꾼들의 수법에 맞서, 
+                    모든 의심스런 상황을 명백히 간파하고 안전 대응법을 훌륭하게 완수하셨습니다.
+                    이에 우리 가족과 은빛 안심 훈련소는 어르신의 훌륭한 예방 지혜를 높이 기리며 
+                    이 "금융 안심 은빛 수료증"을 명예롭게 선사합니다.
                   </p>
                 </div>
 
-                {/* Outer Official Seal Stamp */}
-                <div className="flex justify-between items-end mt-4">
-                  <div className={`text-neutral-500 font-mono ${currentFont.small}`}>
-                    발급일: 2026년 5월 28일<br />
-                    방어소 교육 소장: 친절한 안심이 드림
-                  </div>
-                  
-                  {/* Digital Signature stamp in RED */}
-                  <div className={`w-20 h-20 md:w-24 md:h-24 border-4 border-brand-red rounded-full flex items-center justify-center text-center text-brand-red font-black rotate-[-8deg] shadow-lg animate-pulse select-none bg-brand-black ${currentFont.small}`}>
-                    안심시니어<br />인증도장
-                  </div>
-                </div>
-
-              </div>
-
-              {/* ================= CORE EDUCATION WRAP-UP (SUMMARY) ================= */}
-              <div className="text-left bg-brand-black border-4 border-brand-white p-6 md:p-8 rounded-2xl flex flex-col gap-6" id="summary_cheatsheet">
-                
-                <h4 className={`text-brand-yellow font-black flex items-center gap-2 border-b-2 border-neutral-800 pb-2 ${currentFont.title}`}>
-                  <span className="bg-brand-yellow text-brand-black py-0.5 px-3 rounded-md font-bold">필독!</span>
-                  수명 연장 금융 사기 방어 필수 3대 원칙
-                </h4>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4" id="rules_bento">
-                  
+                {/* Core 3 Principles */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
                   <div className="border bg-neutral-900 border-neutral-800 p-4 rounded-xl flex flex-col gap-2">
-                    <span className={`text-brand-red font-black ${currentFont.title}`}>1원칙</span>
-                    <h5 className={`font-black text-brand-white ${currentFont.desc}`}>출처 불명 링크 클릭 금지</h5>
+                    <span className={`text-brand-green font-black ${currentFont.title}`}>1원칙</span>
+                    <h5 className={`font-black text-brand-white ${currentFont.desc}`}>파란색 미끼 누르기 금지</h5>
                     <p className={`text-neutral-300 leading-relaxed font-bold ${currentFont.smContent}`}>
-                      모르는 번호(010, 02 등)로 들어온 문자 속의 <strong>파란색 인터넷 링크 주소(URL)</strong>는 100% 해킹 악성코드입니다! 절대로 손가락으로 누르시면 안 됩니다.
+                      문자 속의 출처 불명 파란색 인터넷 주소(링크)는 악성 앱을 전송해 돈을 강제 이체하려는 사기입니다. 클릭하지 않는 것이 최고의 지혜입니다.
                     </p>
                   </div>
 
                   <div className="border bg-neutral-900 border-neutral-800 p-4 rounded-xl flex flex-col gap-2">
-                    <span className={`text-brand-yellow font-black ${currentFont.title}`}>2원칙</span>
+                    <span className={`text-brand-green font-black ${currentFont.title}`}>2원칙</span>
                     <h5 className={`font-black text-brand-white ${currentFont.desc}`}>자녀 사칭은 늘 유선 통화로</h5>
                     <p className={`text-neutral-300 leading-relaxed font-bold ${currentFont.smContent}`}>
-                      "엄마, 폰 고장 나서 대리폰이야" 하며 임시 주소 설치나 카드대리 구매를 강요하면 꼭 무시하시고, <strong>기존에 내 폰에 저장된 자녀 진짜 번호</strong>로 전화를 걸어 검증하세요.
+                      "엄마, 아빠 폰 고장 나서 대리폰" 이라며 결제와 상품권 대리 구매를 요하면 꼭 무시하시고, <strong>기존의 저장 자녀 번호</strong>로 유선 통화하여 정교하게 대조해 보세요.
                     </p>
                   </div>
 
@@ -1227,36 +1276,12 @@ export default function App() {
                     <span className={`text-brand-green font-black ${currentFont.title}`}>3원칙</span>
                     <h5 className={`font-black text-brand-white ${currentFont.desc}`}>민관 공식 대조 문의</h5>
                     <p className={`text-neutral-300 leading-relaxed font-bold ${currentFont.smContent}`}>
-                      법원, 검찰, 세무서, 우체국, 구청은 절대로 전화를 하거나 개인 주소로 비밀번호를 요구하지 않습니다. 미심쩍을 땐 문자를 지우고, 해당 <strong>정부기관의 진짜 공식 콜센터</strong>로 물어보세요.
+                      법원, 검찰, 세무서, 우체국, 구청은 절대로 전화를 하거나 개인 주소로 금융비밀번호를 입력을 유도하지 않습니다. 미심쩍을 땐 문자를 무시하고, <strong>정부기관 콜센터</strong>로 직접 확인해 보셔요.
                     </p>
                   </div>
-
                 </div>
 
-                {/* Print simulator & family share message */}
-                <div className="bg-neutral-900 border border-neutral-800 p-4 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className="bg-brand-yellow text-brand-black p-2 rounded-full shrink-0">
-                      <Smartphone className="w-5 h-5" />
-                    </div>
-                    <p className={`text-neutral-400 leading-normal font-bold ${currentFont.small}`}>
-                      이 비법들을 자식이나 자녀, 소중한 친구들에게 소문내셔요! 전화를 걸어 <strong>"내가 안심 은빛 수료증을 땄다!"</strong> 알려주면 가족 모두 보이스 피싱 불안에서 해방됩니다.
-                    </p>
-                  </div>
 
-                  {/* Mock print triggers */}
-                  <button
-                    onClick={() => {
-                      triggerVibe([100]);
-                      window.print();
-                    }}
-                    className={`px-4 py-2 border border-neutral-500 rounded-lg font-bold text-neutral-300 hover:text-white flex items-center gap-2 shrink-0 cursor-pointer ${currentFont.small}`}
-                    title="인쇄용지 출력"
-                  >
-                    <Printer className="w-4 h-4" />
-                    <span>상장 인쇄하기</span>
-                  </button>
-                </div>
 
               </div>
 

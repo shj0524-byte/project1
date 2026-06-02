@@ -1,6 +1,6 @@
 {
   "name": "안심 시니어",
   "description": "어르신들의 안전한 디지털 환경을 위한 친절한 스미싱 사기 방어 훈련소",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
