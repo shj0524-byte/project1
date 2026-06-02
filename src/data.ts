@@ -3,6 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import deliveryImg from './assets/images/smishing_delivery_1779981722173.png';
+import govImg from './assets/images/smishing_gov_1779981763446.png';
+import familyImg from './assets/images/smishing_family_1779981742686.png';
+
 export interface Quiz {
   id: number;
   type: '택배' | '경조사' | '정부지원금' | '세금환급' | '카드승인' | '자녀사칭' | '쿠폰지급';
@@ -37,7 +41,7 @@ export const QUIZ_LIST: Quiz[] = [
     dangerExplanation: '인터넷 파란 주소는 악성 앱을 설치해 돈을 빼내 가려는 함정입니다! 절대 누르시면 안 됩니다.',
     praiseComment: '맞습니다! 문자의 주소는 절대 누르지 않고 공식 고객센터에 직접 확인하는 대처가 백점입니다!',
     coreRule: '출처가 확실하지 않은 인터넷 주소(파란색 링크)는 절대로! 손가락으로 누르시면 안 됩니다.',
-    realImageSrc: '/src/assets/images/smishing_delivery_1779981722173.png'
+    realImageSrc: deliveryImg
   },
   {
     id: 2,
@@ -74,7 +78,7 @@ export const QUIZ_LIST: Quiz[] = [
     dangerExplanation: '나라나 시청 등 정부 기관은 문자의 가짜 링크를 통해 지원금 신청을 강제하거나 유도하지 않습니다.',
     praiseComment: '맞습니다! 주민센터를 방문해서 정확한 안내를 직접 확인하는 원칙이 가장 지혜로운 예방법입니다!',
     coreRule: '정부나 민관 공공기관은 절대로 급작스럽게 개인 문자로 생소한 인터넷 신청 주소를 발송하지 않습니다.',
-    realImageSrc: '/src/assets/images/smishing_gov_1779981763446.png'
+    realImageSrc: govImg
   },
   {
     id: 4,
@@ -129,7 +133,7 @@ export const QUIZ_LIST: Quiz[] = [
     dangerExplanation: '아무리 전화가 안 된다고 우겨도, 진짜 가족 번호로 목소리가 확인될 때까지 절대 아무 정보를 주면 안 됩니다.',
     praiseComment: '맞습니다! 자식 관련 다급한 일일수록 먼저 진짜 번호로 전화 확인하는 것이 완벽한 안전법입니다!',
     coreRule: '자녀가 낯선 유선 번호로 긴급 상황을 핑계 대면 절대 믿지 말고, 반드시 자녀의 "진짜 평소 번호"로 다시 통화하세요.',
-    realImageSrc: '/src/assets/images/smishing_family_1779981742686.png'
+    realImageSrc: familyImg
   },
   {
     id: 7,
