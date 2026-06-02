@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&family=Space+Grotesk:wght@500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Noto Sans KR', 'Pretendard', system-ui, -apple-system, sans-serif;
+  --font-display: 'Space Grotesk', sans-serif;
+  --color-brand-yellow: #FFFF00;
+  --color-brand-green: #00FF00;
+  --color-brand-red: #FF0000;
+  --color-brand-black: #000000;
+  --color-brand-white: #FFFFFF;
+}
+
+/* Custom high-contrast utility classes */
+@layer utilities {
+  .blink-warning {
+    animation: text-blink 1.5s infinite;
+  }
+  
+  .animate-pulse-ring {
+    animation: pulse-ring 2s infinite;
+  }
+}
+
+@keyframes text-blink {
+  0%, 100% { opacity: 1; color: #FF0000; }
+  50% { opacity: 0.5; color: #FFFF00; }
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.95); opacity: 0.4; }
+  50% { transform: scale(1.15); opacity: 0.8; }
+  100% { transform: scale(0.95); opacity: 0.4; }
+}
+
+/* Senior-Friendly custom scrollbars */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-track {
+  background: #000000;
+  border: 1px solid #333333;
+}
+::-webkit-scrollbar-thumb {
+  background: #FFFF00;
+  border: 2px solid #000000;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #FFFF33;
+}
+
